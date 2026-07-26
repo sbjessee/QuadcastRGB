@@ -42,6 +42,10 @@
 #define MAX_BR_SPD_DLY 100
 #define SPD_DEFAULT 81
 #define DLY_DEFAULT 10
+#define MAX_ANGLE 360
+#define ANGLE_DEFAULT 0
+#define MAX_WIDTH 400
+#define WIDTH_DEFAULT 100
 
 enum hexcolors {
     red = 0xf20000,
@@ -59,22 +63,33 @@ enum diode_group { all, upper, lower }; /* state values */
 #endif
 #define VERSION_MESSAGE "quadcastrgb version " VERSION
 #define HELP_MESSAGE _("Usage: quadcastrgb [-h] [-v] [-a|-u|-l] [-b bright] "\
-                     "[-s speed] mode [COLORS]...\nAvailable modes: "\
-                     "solid, blink, cycle, lightning, wave. Colors are hex "\
-                     "numbers.\nSee 'man quadcastrgb' for details.")
+                     "[-s speed] [-g angle] [-w width] mode "\
+                     "[COLOR[@pos]]...\nAvailable modes: solid, blink, "\
+                     "cycle, lightning, wave. Colors are hex numbers, "\
+                     "optionally followed by @<0-100> to set that color's "\
+                     "position in the gradient (default: evenly spaced).\n"\
+                     "-g sets the gradient angle in degrees and -w the "\
+                     "gradient width in percent (both wave mode, Quadcast "\
+                     "2S only).\nSee 'man quadcastrgb' for details.")
 #define BADARG_MSG   _("Unknown option: %s\n")
 #define NOPARAM_LONG_MSG _("%s: no parameter(s) specified\n")
 #define NOPARAM_SHORT_MSG _("%s: no parameter or it isn't a natural number\n")
 #define BS_BADPARAM_MSG _("%s: the parameter must be an integer 0-100\n")
+#define ANGLE_BADPARAM_MSG _("%s: the parameter must be an integer 0-360\n")
+#define WIDTH_BADPARAM_MSG _("%s: the parameter must be an integer 1-400\n")
 #define NOMODE_MSG _("No mode specified (solid|blink|cycle|lightning|wave)\n")
 
 /* Structs */
 struct colscheme {
     const char *mode;
     int colors[COLORS_CNT];
+    int stops[COLORS_CNT]; /* gradient position 0-100 per color, or nocolor
+                             * for "unset" (evenly spaced) */
     int br;
     int spd; /* ignored in solid */
     int dly; /* blink-only */
+    int angle; /* gradient angle in degrees, wave mode on Quadcast 2S only */
+    int width; /* gradient width in percent, wave mode on Quadcast 2S only */
 };
 
 struct colschemes {

@@ -4,7 +4,7 @@ VERSION = 1.0.5
 CFLAGS_DEV = -g -Wall -DVERSION="\"$(VERSION)"\" -D DEBUG
 CFLAGS_INS = -s -O2 -DVERSION="\"$(VERSION)"\"
 
-LIBS = -lusb-1.0
+LIBS = -lusb-1.0 -lm
 
 SRCMODULES = modules/argparser.c modules/devio.c modules/rgbmodes.c
 OBJMODULES = $(SRCMODULES:.c=.o)
@@ -23,7 +23,7 @@ DEBNAME = quadcastrgb-$(VERSION)-$(DEBPKGVER)-$(DEBARCH)
 
 # System-dependent part
 ifeq ($(OS),freebsd)
-	LIBS = -lusb-1.0 -lintl # libintl requires the explicit indication
+	LIBS = -lusb-1.0 -lintl -lm # libintl requires the explicit indication
 endif
 ifeq ($(OS),freebsd) # thus, gcc required on FreeBSD
 	CC = gcc # clang seems to be unable to find libusb & libintl

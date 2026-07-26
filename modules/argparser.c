@@ -30,6 +30,10 @@ static void set_arg(const char ***arg_pp, const char **argv_end,
                     struct colschemes *cs, int *state, int *verbose);
 static void set_br_spd_dly(const char **arg_p, const char **argv_end,
                            int state, struct colschemes *cs);
+static void set_angle(const char **arg_p, const char **argv_end,
+                      int state, struct colschemes *cs);
+static void set_width(const char **arg_p, const char **argv_end,
+                      int state, struct colschemes *cs);
 static void set_mode(const char ***arg_pp, const char **argv_end,
                      int state, struct colschemes *cs);
 static void set_colors(const char ***arg_pp, const char **argv_end,
@@ -78,6 +82,9 @@ void parse_arg(struct colschemes *cs, int argc, const char **argv,
     cs->upper.br = cs->lower.br = MAX_BR_SPD_DLY;
     cs->upper.spd = cs->lower.spd = SPD_DEFAULT;
     cs->upper.dly = cs->lower.dly = DLY_DEFAULT;
+    cs->upper.angle = cs->lower.angle = ANGLE_DEFAULT;
+    cs->upper.width = cs->lower.width = WIDTH_DEFAULT;
+    cs->upper.stops[0] = cs->lower.stops[0] = nocolor;
     cs->upper.mode = cs->lower.mode = NULL;
 
     for(arg_p = argv+1; arg_p < argv+argc; arg_p++)
@@ -115,6 +122,12 @@ static void set_arg(const char ***arg_pp, const char **argv_end,
     } else if(strequ(**arg_pp, "-b") || strequ(**arg_pp, "-s") ||
                                         strequ(**arg_pp, "-d")) {
         set_br_spd_dly(*arg_pp, argv_end, *state, cs);
+        (*arg_pp)++; /* skip option's parameter */
+    } else if(strequ(**arg_pp, "-g")) {
+        set_angle(*arg_pp, argv_end, *state, cs);
+        (*arg_pp)++; /* skip option's parameter */
+    } else if(strequ(**arg_pp, "-w")) {
+        set_width(*arg_pp, argv_end, *state, cs);
         (*arg_pp)++; /* skip option's parameter */
     } else if(is_mode(**arg_pp)) {
         set_mode(arg_pp, argv_end, *state, cs);
@@ -157,6 +170,38 @@ static void set_br_spd_dly(const char **arg_p, const char **argv_end,
     }
 }
 
+static void set_angle(const char **arg_p, const char **argv_end,
+                      int state, struct colschemes *cs)
+{
+    short num;
+    if(no_opt_param(arg_p, argv_end)) {
+        fprintf(stderr, NOPARAM_SHORT_MSG, *arg_p);
+        exit(argerr);
+    }
+    num = atoi(*(arg_p+1));
+    if(num > MAX_ANGLE) {
+        fprintf(stderr, ANGLE_BADPARAM_MSG, *arg_p);
+        exit(argerr);
+    }
+    write_int_param(&(cs->upper.angle), &(cs->lower.angle), num, state);
+}
+
+static void set_width(const char **arg_p, const char **argv_end,
+                      int state, struct colschemes *cs)
+{
+    short num;
+    if(no_opt_param(arg_p, argv_end)) {
+        fprintf(stderr, NOPARAM_SHORT_MSG, *arg_p);
+        exit(argerr);
+    }
+    num = atoi(*(arg_p+1));
+    if(num < 1 || num > MAX_WIDTH) {
+        fprintf(stderr, WIDTH_BADPARAM_MSG, *arg_p);
+        exit(argerr);
+    }
+    write_int_param(&(cs->upper.width), &(cs->lower.width), num, state);
+}
+
 static int is_number(const char *str)
 {
     /* Very primitive check, but enough for no_opt_param */
@@ -194,20 +239,27 @@ static void set_colors(const char ***arg_pp, const char **argv_end,
         int col_cnt = 0;
 
         do {
-            int hexnum;
+            int hexnum, stoppos;
+            const char *at;
             (*arg_pp)++;
             if(***arg_pp == '#')
                 hexnum = (int)strtol(**arg_pp+1, NULL, 16);
             else
                 hexnum = (int)strtol(**arg_pp, NULL, 16);
+            at = strchr(**arg_pp, '@');
+            stoppos = at ? atoi(at+1) : nocolor;
 
             write_int_param(&(cs->upper.colors[col_cnt]),
                             &(cs->lower.colors[col_cnt]), hexnum, state);
+            write_int_param(&(cs->upper.stops[col_cnt]),
+                            &(cs->lower.stops[col_cnt]), stoppos, state);
             col_cnt++;
         } while(is_color(*arg_pp+1, argv_end) && col_cnt < COLORS_CNT);
 
         write_int_param(&(cs->upper.colors[col_cnt]),
                         &(cs->lower.colors[col_cnt]), nocolor, state);
+        write_int_param(&(cs->upper.stops[col_cnt]),
+                        &(cs->lower.stops[col_cnt]), nocolor, state);
     }
 }
 
@@ -234,7 +286,7 @@ static int ishexnumber(const char *str)
 {
     if(*str == '#') /* include the "#RRGGBB" notation */
         str++;
-    for(; *str; str++) {
+    for(; *str && *str != '@'; str++) { /* "@pos" is a gradient position */
         if(!(*str>='0' && *str<='9') && !(*str>='A' && *str<'G') &&
                                         !(*str>='a' && *str<'g')) {
             return 0;

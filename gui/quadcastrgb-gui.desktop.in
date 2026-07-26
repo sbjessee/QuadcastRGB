@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=QuadcastRGB
+Comment=Control HyperX Quadcast RGB lighting
+Exec=__BINPATH__
+Icon=audio-input-microphone
+Terminal=false
+Categories=Utility;Settings;
+X-KDE-autostart-phase=1
+X-KDE-StartupNotify=false
+StartupNotify=false

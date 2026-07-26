@@ -34,6 +34,9 @@
 #define QS2S_PACKET_CNT_CODE 0x01
 #define QS2S_LED_CNT 108
 #define QS2S_SOLID_PKT_CNT 0x06
+#define QS2S_LEDS_PER_PACKET 20
+#define QS2S_NUM_COLUMNS 12
+#define QS2S_LEDS_PER_COLUMN 9
 
 #include <libusb-1.0/libusb.h>
 #include "rgbmodes.h" /* for datpack & byte_t types, count_color_pairs, defs */

@@ -54,6 +54,7 @@
 /* Cycle */
 #define MIN_CYCL_TR 12
 #define MAX_CYCL_TR 128
+#define MIN_WRAP_TR 4 /* floor for the wrap-back-to-start blend, gradients */
 /* Lightning */
 #define MIN_LGHT_BL 1
 #define MAX_LGHT_BL 9

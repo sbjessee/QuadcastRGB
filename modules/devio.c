@@ -34,6 +34,7 @@
 /* Constants */
 #define DISPLAY_MODE_SLEEP_TIME 55*1000 /* microsec */
 #define QS2S_DISPLAY_SLEEP_TIME 700 /* microsec */
+#define QS2S_ANIM_FRAME_SLEEP_TIME (50*1000) /* microsec, animated modes only */
 
 #define DEV_EPOUT 0x00 /* control endpoint OUT */
 #define DEV_EPIN 0x80 /* control endpoint IN */
@@ -273,8 +274,17 @@ void send_packets(libusb_device_handle *handle, const datpack *data_arr,
     /* The loop runs until a signal handler resets the variable */
     nonstop = 1; /* set to 1 only here */
     if(pid == QUADCAST_2S_PID) {
-        while(nonstop)
-            qs2s_display_data_arr(handle, *data_arr, pck_cnt);
+        /* No on-device effects exist for this mic: every mode is a sequence
+         * of full 108-LED frames (6 packets each) streamed by the host. */
+        int frame = 0, frame_total = pck_cnt / QS2S_SOLID_PKT_CNT;
+        while(nonstop) {
+            qs2s_display_data_arr(handle, *data_arr +
+                        (size_t)frame*QS2S_SOLID_PKT_CNT*DATA_PACKET_SIZE,
+                        QS2S_SOLID_PKT_CNT);
+            frame = (frame+1) % frame_total;
+            if(frame_total > 1)
+                usleep(QS2S_ANIM_FRAME_SLEEP_TIME);
+        }
     } else {
         short command_cnt;
         command_cnt = count_color_commands(data_arr, pck_cnt, 0);

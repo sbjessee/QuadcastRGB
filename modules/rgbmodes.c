@@ -26,6 +26,9 @@
 #include <stdio.h> /* for fprintf & fputs */
 #include <stdlib.h> /* for srand & rand */
 #include <time.h> /* for time */
+#include <math.h> /* for cos & sin, gradient angle on Quadcast 2S */
+
+#define QS2S_PI 3.14159265358979323846
 
 #include "devio.h" /* for QUADCAST_2S_PID */
 
@@ -36,10 +39,10 @@
 static void get_mode_sizes(struct colschemes *cs, int *seq_upper,
                                                                int *seq_lower);
 static int count_data(struct colscheme *colsch, int pid);
-static int count_2s_data(const struct colscheme *colsch);
+static int count_2s_data(struct colscheme *colsch);
 static void fill_data(struct colscheme *colsch, byte_t *da, int pckcnt,
                                                                     int group);
-static void fill_qs2s_data(const struct colscheme *colsch, byte_t *da,
+static void fill_qs2s_data(struct colscheme *colsch, byte_t *da,
                                                         int pckcnt, int group);
 static void equalize(int upper_size, int lower_size, datpack *da);
 static void fillup_to(size_t copy_size, byte_t *curr, byte_t *finish);
@@ -48,10 +51,21 @@ static void set_brightness(int *color, int br);
 /* Solid */
 static void sequence_solid(const int *colors, byte_t *da);
 static void sequence_solid_qs2s(const int *colors, byte_t *da, int group);
+static void qs2s_write_group_color(byte_t *frame, int color, int group);
 static void fill_qs2s_packets_with_color(byte_t *start, int clr, int offset,
                                                                       int cnt);
+static void qs2s_animate(struct colscheme *colsch, byte_t *da, int frame_total,
+                                                                     int group);
+static int qs2s_led_column(int led);
+static byte_t *qs2s_led_ptr(byte_t *frame, int led);
+static void qs2s_write_wave_group(byte_t *frame, const byte_t *cmdbuf,
+                          unsigned int rawsize, unsigned int frame_step,
+                          int group, int angle_deg, int width_pct);
+static void qs2s_debug_row(byte_t *frame, int row, int group);
+static int qs2s_led_row(int led);
 /* Blink */
-static unsigned int count_blink_data(struct colscheme *colsch);
+static unsigned int count_blink_data(struct colscheme *colsch,
+                                                       unsigned int *rawsize);
 static void sequence_blink_random(int speed, int dly_seg, byte_t *da);
 static void sequence_blink(const struct colscheme *colsch, byte_t *da,
                                                                    int pckcnt);
@@ -59,16 +73,19 @@ static void blink_segment_fill(int col, int col_seg, int dly_seg, byte_t **da);
 static void color_fill(int color, int size, byte_t **da);
 static int random_color();
 /* Cycle */
-static unsigned int count_cycle_data(const struct colscheme *colsch);
+static unsigned int count_cycle_data(const struct colscheme *colsch,
+                                                       unsigned int *rawsize);
 static int get_gradient_length(const int *color, int spd);
-static void sequence_cycle(const int *color, int spd, byte_t *da);
+static void sequence_cycle(const int *color, const int *stops, int spd,
+                                                                  byte_t *da);
 static void write_gradient(byte_t **da, int start_col, int end_col,
                                                                    int length);
 /* Wave */
 static void sequence_wave(int *color, int spd, int group, byte_t *da);
 static void wave_array_shift(int *color);
 /* Lightning & Pulse */
-static unsigned int count_lightning_data(struct colscheme *colsch);
+static unsigned int count_lightning_data(struct colscheme *colsch,
+                                                       unsigned int *rawsize);
 static void sequence_lightning(const int *color, int spd, int group,
                                                   int synchronous, byte_t *da);
 static int next_gradient_color(int color, int endcolor, unsigned int size);
@@ -148,58 +165,84 @@ static int count_data(struct colscheme *colsch, int pid)
     if(strequ(colsch->mode, "solid")) {
         return 1;
     } else if(strequ(colsch->mode, "blink")) {
-        return count_blink_data(colsch);
+        return count_blink_data(colsch, NULL);
     } else if(strequ(colsch->mode, "cycle") || strequ(colsch->mode, "wave")) {
-        return count_cycle_data(colsch);
+        return count_cycle_data(colsch, NULL);
     } else if(strequ(colsch->mode, "lightning") ||
               strequ(colsch->mode, "pulse")) {
-        return count_lightning_data(colsch);
+        return count_lightning_data(colsch, NULL);
     }
     return -1;
 }
 
-static int count_2s_data(const struct colscheme *colsch)
+static int count_2s_data(struct colscheme *colsch)
 {
+    unsigned int rawsize = 0;
+
     if(strequ(colsch->mode, "solid")) {
         /* 6 packets for theoretical 140 LEDs where 108 are actually used */
-        return 6;
+        return QS2S_SOLID_PKT_CNT;
+    } else if(strequ(colsch->mode, "blink")) {
+        count_blink_data(colsch, &rawsize);
+    } else if(strequ(colsch->mode, "cycle") || strequ(colsch->mode, "wave")) {
+        count_cycle_data(colsch, &rawsize);
+    } else if(strequ(colsch->mode, "lightning") ||
+              strequ(colsch->mode, "pulse")) {
+        count_lightning_data(colsch, &rawsize);
+    } else {
+        return -1;
     }
-    return -1;
+    /* one host-driven animation frame = 6 physical packets (108 LEDs) */
+    return rawsize < 1 ? -1 : (int)rawsize * QS2S_SOLID_PKT_CNT;
 }
 
-static unsigned int count_blink_data(struct colscheme *colsch)
+static unsigned int count_blink_data(struct colscheme *colsch,
+                                                        unsigned int *rawsize)
 {
     unsigned int frame, size = 0;
 
     if(colsch->colors[0] == nocolor) { /* case of random colors */
         srand(time(NULL)); /* random seed (must be done only once) */
+        if(rawsize)
+            *rawsize = MAX_COLPAIR_COUNT;
         return MAX_PCT_COUNT;
     }
 
     frame = 101-colsch->spd + colsch->dly;
     size = sizeof_frames(colsch->colors, frame);
+    if(rawsize)
+        *rawsize = size;
     return DIV_CEIL(size, COLPAIR_PER_PCT);
 }
 
-static unsigned int count_cycle_data(const struct colscheme *colsch)
+static unsigned int count_cycle_data(const struct colscheme *colsch,
+                                                        unsigned int *rawsize)
 {
     unsigned int size;
     /* The size of one gradient: */
     size = SPEED_RANGE(MIN_CYCL_TR, MAX_CYCL_TR, colsch->spd);
     /* The size of all colpairs: */
-    size *= colarr_len(colsch->colors); 
-    if(size > MAX_COLPAIR_COUNT) /* case of overflow */
+    size *= colarr_len(colsch->colors);
+    if(size > MAX_COLPAIR_COUNT) { /* case of overflow */
+        if(rawsize)
+            *rawsize = MAX_COLPAIR_COUNT;
         return MAX_PCT_COUNT;
+    }
+    if(rawsize)
+        *rawsize = size;
     return DIV_CEIL(size, COLPAIR_PER_PCT);
 }
 
-static unsigned int count_lightning_data(struct colscheme *colsch)
+static unsigned int count_lightning_data(struct colscheme *colsch,
+                                                        unsigned int *rawsize)
 {
     unsigned int frame, size = 0;
     frame = SPEED_RANGE(MIN_LGHT_BL, MAX_LGHT_BL, colsch->spd) +
             SPEED_RANGE(MIN_LGHT_UP, MAX_LGHT_UP, colsch->spd) +
             SPEED_RANGE(MIN_LGHT_DOWN, MAX_LGHT_DOWN, colsch->spd);
     size = sizeof_frames(colsch->colors, frame);
+    if(rawsize)
+        *rawsize = size;
     return DIV_CEIL(size, COLPAIR_PER_PCT);
 }
 
@@ -231,7 +274,7 @@ static void fill_data(struct colscheme *colsch, byte_t *da, int pckcnt,
         else
             sequence_blink(colsch, da, pckcnt);
     } else if(strequ(colsch->mode, "cycle")) {
-        sequence_cycle(colsch->colors, colsch->spd, da);
+        sequence_cycle(colsch->colors, colsch->stops, colsch->spd, da);
     } else if(strequ(colsch->mode, "wave")) {
         sequence_wave(colsch->colors, colsch->spd, group, da);
     } else if(strequ(colsch->mode, "lightning")) {
@@ -241,7 +284,7 @@ static void fill_data(struct colscheme *colsch, byte_t *da, int pckcnt,
     }
 }
 
-static void fill_qs2s_data(const struct colscheme *colsch, byte_t *da,
+static void fill_qs2s_data(struct colscheme *colsch, byte_t *da,
                                                          int pckcnt, int group)
 {
     int pcknum = 0;
@@ -249,11 +292,144 @@ static void fill_qs2s_data(const struct colscheme *colsch, byte_t *da,
     for(; pcknum < pckcnt; pcknum++) {
         da[pcknum*DATA_PACKET_SIZE] = QS2S_DISPLAY_CODE;
         da[pcknum*DATA_PACKET_SIZE+1] = QS2S_RGB_PACKET_CODE;
-        da[pcknum*DATA_PACKET_SIZE+2] = pcknum;
+        /* packet index is local to its own 6-packet display frame */
+        da[pcknum*DATA_PACKET_SIZE+2] = pcknum % QS2S_SOLID_PKT_CNT;
+    }
+
+    /* Temporary hardware-mapping probe: QUADCASTRGB_DEBUG_ROW=N (0-8) lights
+     * up only row N of the LED matrix so the physical layout can be read
+     * off the mic. Remove once the mute-ring row is identified. */
+    if(getenv("QUADCASTRGB_DEBUG_ROW")) {
+        qs2s_debug_row(da, atoi(getenv("QUADCASTRGB_DEBUG_ROW")), group);
+        return;
     }
 
     if(strequ(colsch->mode, "solid"))
         sequence_solid_qs2s(colsch->colors, da, group);
+    else
+        qs2s_animate(colsch, da, pckcnt/QS2S_SOLID_PKT_CNT, group);
+}
+
+static void qs2s_debug_row(byte_t *frame, int row, int group)
+{
+    int start = (group == upper) ? 0 : QS2S_LED_CNT/2;
+    int end = start + QS2S_LED_CNT/2;
+    int led;
+
+    for(led = start; led < end; led++) {
+        int color = (qs2s_led_row(led) == row) ? 0xffffff : 0;
+        write_hexcolor(color, qs2s_led_ptr(frame, led));
+    }
+}
+
+/* True vertical row (0=top) of a wire-order LED. The strip is wired in a
+ * serpentine: even columns run top->bottom in wire order, odd columns
+ * bottom->top, so the raw led%9 offset has to be flipped for even columns */
+static int qs2s_led_row(int led)
+{
+    int local = led % QS2S_LEDS_PER_COLUMN;
+    return (qs2s_led_column(led) % 2 == 0)
+                              ? QS2S_LEDS_PER_COLUMN-1 - local : local;
+}
+
+/* Host-driven animation for the Quadcast 2S: there is no on-device effect
+ * engine (confirmed against OpenRGB's driver), so every mode is realised by
+ * repeatedly pushing full 108-LED frames, exactly like the control-transfer
+ * protocol does for the older mics. The per-step colors are produced by
+ * reusing the existing sequence_* generators against a private buffer. */
+static void qs2s_animate(struct colscheme *colsch, byte_t *da, int frame_total,
+                                                                     int group)
+{
+    unsigned int rawsize = 0, k;
+    byte_t *cmdbuf, *cmd;
+
+    if(strequ(colsch->mode, "blink")) {
+        count_blink_data(colsch, &rawsize);
+    } else if(strequ(colsch->mode, "cycle") || strequ(colsch->mode, "wave")) {
+        count_cycle_data(colsch, &rawsize);
+    } else if(strequ(colsch->mode, "lightning") ||
+                                            strequ(colsch->mode, "pulse")) {
+        count_lightning_data(colsch, &rawsize);
+    }
+    if(rawsize < 1)
+        return;
+
+    cmdbuf = calloc(2*BYTE_STEP, rawsize);
+    if(!cmdbuf)
+        return;
+
+    if(strequ(colsch->mode, "blink")) {
+        if(colsch->colors[0] == nocolor)
+            sequence_blink_random(colsch->spd, colsch->dly, cmdbuf);
+        else
+            sequence_blink(colsch, cmdbuf, rawsize);
+    } else if(strequ(colsch->mode, "cycle") || strequ(colsch->mode, "wave")) {
+        /* "wave" gets its travelling look from qs2s_write_wave_group below,
+         * spreading this same plain cycle across the ring's 12 columns; the
+         * old two-diode phase shift (wave_array_shift) doesn't apply here */
+        sequence_cycle(colsch->colors, colsch->stops, colsch->spd, cmdbuf);
+    } else if(strequ(colsch->mode, "lightning")) {
+        sequence_lightning(colsch->colors, colsch->spd, group, 0, cmdbuf);
+    } else if(strequ(colsch->mode, "pulse")) {
+        sequence_lightning(colsch->colors, colsch->spd, group, 1, cmdbuf);
+    }
+
+    for(k = 0; k < (unsigned int)frame_total; k++) {
+        byte_t *frame = da + (size_t)k*QS2S_SOLID_PKT_CNT*DATA_PACKET_SIZE;
+        if(strequ(colsch->mode, "wave")) {
+            qs2s_write_wave_group(frame, cmdbuf, rawsize, k, group,
+                                  colsch->angle, colsch->width);
+        } else {
+            cmd = cmdbuf + (k % rawsize)*2*BYTE_STEP;
+            qs2s_write_group_color(frame, (cmd[1]<<16) + (cmd[2]<<8) + cmd[3],
+                                   group);
+        }
+    }
+    free(cmdbuf);
+}
+
+/* Physical LED index -> ring column (0-11), from the 12x9 matrix HyperX
+ * uses on this mic (reverse-engineered by the OpenRGB project); 9 LEDs per
+ * column, columns run consecutively in wire order starting at column 10 */
+static int qs2s_led_column(int led)
+{
+    return ((led/QS2S_LEDS_PER_COLUMN) + 10) % QS2S_NUM_COLUMNS;
+}
+
+static byte_t *qs2s_led_ptr(byte_t *frame, int led)
+{
+    return frame + (led/QS2S_LEDS_PER_PACKET)*DATA_PACKET_SIZE
+                  + 4 + 3*(led % QS2S_LEDS_PER_PACKET);
+}
+
+/* Spreads the cmdbuf gradient across the ring by column instead of just
+ * splitting the mic into two halves, so the colors travel around the mic
+ * instead of jumping between two blocks */
+static void qs2s_write_wave_group(byte_t *frame, const byte_t *cmdbuf,
+                          unsigned int rawsize, unsigned int frame_step,
+                          int group, int angle_deg, int width_pct)
+{
+    int start = (group == upper) ? 0 : QS2S_LED_CNT/2;
+    int end = start + QS2S_LED_CNT/2;
+    int led;
+    double theta = angle_deg*QS2S_PI/180.0;
+    double cos_t = cos(theta), sin_t = sin(theta);
+    /* width < 100% shows only a slice of the gradient across the ring at
+     * once (it still scrolls through the rest as frame_step advances);
+     * width > 100% repeats the gradient more than once around the ring */
+    double span = rawsize*width_pct/100.0;
+
+    for(led = start; led < end; led++) {
+        double col_phase = qs2s_led_column(led)*span/QS2S_NUM_COLUMNS;
+        double row_phase = qs2s_led_row(led)*span/QS2S_LEDS_PER_COLUMN;
+        long shift = (long)(col_phase*cos_t + row_phase*sin_t);
+        long phase = ((long)frame_step + shift) % (long)rawsize;
+        const byte_t *cmd;
+        if(phase < 0)
+            phase += rawsize;
+        cmd = cmdbuf + phase*2*BYTE_STEP;
+        memcpy(qs2s_led_ptr(frame, led), cmd+1, 3);
+    }
 }
 
 static void set_brightness(int *color, int br) 
@@ -302,10 +478,15 @@ static void sequence_solid(const int *colors, byte_t *da)
 
 static void sequence_solid_qs2s(const int *colors, byte_t *da, int group)
 {
+    qs2s_write_group_color(da, colors[0], group);
+}
+
+static void qs2s_write_group_color(byte_t *frame, int color, int group)
+{
     if(group == upper)
-        fill_qs2s_packets_with_color(da, colors[0], 0, QS2S_LED_CNT/2);
+        fill_qs2s_packets_with_color(frame, color, 0, QS2S_LED_CNT/2);
     else if(group == lower)
-        fill_qs2s_packets_with_color(da+2*DATA_PACKET_SIZE, colors[0], 14,
+        fill_qs2s_packets_with_color(frame+2*DATA_PACKET_SIZE, color, 14,
                                                                QS2S_LED_CNT/2);
 }
 
@@ -356,22 +537,48 @@ static void blink_segment_fill(int col, int col_seg, int dly_seg, byte_t **da)
     color_fill(black, dly_seg, da);
 }
 
-static void sequence_cycle(const int *color, int spd, byte_t *da)
+static void sequence_cycle(const int *color, const int *stops, int spd,
+                                                                  byte_t *da)
 {
-    const int *first_col;
-    int tr_length;
-    first_col = color;
-    tr_length = get_gradient_length(color, spd);
-    for(; *color != nocolor; color++) {
-        int tr_start, tr_end;
+    const int *first_col = color;
+    int color_cnt = colarr_len(color);
+    int total_length = get_gradient_length(color, spd) * color_cnt;
+    int has_stops = stops && stops[0] != nocolor;
+    /* The wrap segment (last color back to the first) is sized from how
+     * much room the user actually left after the last stop: close to
+     * position 100 gives a short blend, further away gives a longer one.
+     * A small floor keeps it from ever fully collapsing (hard, flickering
+     * seam) when a stop sits right at 100. Non-wrap segments split
+     * whatever's left, proportional to their own positions, so the total
+     * never exceeds the buffer allocated for this scheme. */
+    int span = has_stops ? stops[color_cnt-1] - stops[0] : 0;
+    int wrap_length = has_stops ?
+                       total_length * (100 + stops[0] - stops[color_cnt-1])
+                                                                  / 100 : 0;
+    int idx = 0, written = 0;
+
+    if(has_stops && total_length > MIN_WRAP_TR && wrap_length < MIN_WRAP_TR)
+        wrap_length = MIN_WRAP_TR;
+
+    for(; *color != nocolor; color++, idx++) {
+        int tr_start, tr_end, tr_length;
+        int is_wrap = (*(color+1) == nocolor);
 
         tr_start = *color;
-        if(*(color+1) == nocolor)
-            tr_end = *first_col;
-        else
-            tr_end = *(color+1);
+        tr_end = is_wrap ? *first_col : *(color+1);
 
+        if(!has_stops) {
+            tr_length = total_length / color_cnt;
+        } else if(is_wrap) {
+            tr_length = total_length - written; /* whatever remains */
+        } else if(span > 0) {
+            tr_length = (total_length-wrap_length) * (stops[idx+1]-stops[idx])
+                                                                     / span;
+        } else {
+            tr_length = (total_length-wrap_length) / (color_cnt-1);
+        }
         write_gradient(&da, tr_start, tr_end, tr_length);
+        written += tr_length;
     }
 }
 
@@ -416,8 +623,9 @@ static void sequence_wave(int *color, int spd, int group, byte_t *da)
 {
     if(group == lower)
         wave_array_shift(color);
-    /* Just do the same as in the Cycle mode */
-    sequence_cycle(color, spd, da);
+    /* Just do the same as in the Cycle mode; gradient stops aren't
+     * supported on this protocol's simple two-diode wave */
+    sequence_cycle(color, NULL, spd, da);
 }
 
 static void wave_array_shift(int *color)
