@@ -1,3 +1,4 @@
 temp/
 modules/*.o
 deps.mk # auto created by Makefile
+quadcastrgb
