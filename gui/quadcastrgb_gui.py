@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 APP_NAME = "quadcastrgb-gui"
 CLI_BIN = "quadcastrgb"
-RGB_GROUP = "hyperrgb"  # udev rule group; re-exec'd via sg(1) to dodge stale sessions
+RGB_GROUP = "hyperrgb"  # udev rule group; re-exec'd via sg(1)/newgrp(1) to dodge stale sessions
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
     APP_NAME,
@@ -131,7 +131,9 @@ def run_cli(cfg):
         cmd.append("-v")
     cmd += build_full_args(cfg)
     if _group_exists(RGB_GROUP):
-        cmd = ["sg", RGB_GROUP, "-c", shlex.join(cmd)]
+        group_exec = shutil.which("sg") or shutil.which("newgrp")
+        if group_exec:
+            cmd = [group_exec, RGB_GROUP, "-c", shlex.join(cmd)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
     except subprocess.TimeoutExpired:
